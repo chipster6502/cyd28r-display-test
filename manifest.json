@@ -1,0 +1,13 @@
+{
+  "name": "MiSTer Monitor CYD28R",
+  "version": "2.5.1-beta",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "cyd28r-display-test-v1.bin", "offset": 0 }
+      ]
+    }
+  ]
+}
