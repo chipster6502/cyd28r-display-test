@@ -1460,6 +1460,11 @@ def _update_state():
     corename    = _read_file('/tmp/CORENAME')
     activegame  = _read_file('/tmp/ACTIVEGAME')
     currentpath = _read_file('/tmp/CURRENTPATH')
+    # FILESELECT's CONTENT, not just its mtime. Main_MiSTer writes 'active'
+    # while the file browser is open and 'selected' at the moment a file is
+    # actually launched (menu.cpp, guarded by log_file_entry). That single word
+    # separates navigation from a load without any timing heuristics.
+    fileselect  = _read_file('/tmp/FILESELECT')
     fullpath    = _read_file('/tmp/FULLPATH')
 
     # --- Navigation vs real load (tolerant gate) ---
@@ -1498,35 +1503,17 @@ def _update_state():
     core_changed      = (corename != _last_evaluated_corename)
     activegame_recent = (time.time_ns() - ag_ns) <= 3_000_000_000  # explicit launch (Remote/Zaparoo)
 
-    # --- No-Remote fallback for the navigation gate -------------------------
-    # ACTIVEGAME can only vouch for a launch when something maintains it
-    # (mrext Remote/PlayLog, Zaparoo). Without those, a same-core game change
-    # looks identical to OSD navigation here (coupled writes, same corename,
-    # never-recent ACTIVEGAME) and gets dropped: the display freezes on the
-    # first game of each core, while arcade stays immune because every .mra
-    # rewrites CORENAME. Field-reported on two setups.
-    #
-    # When ACTIVEGAME is structurally dead (empty, or older than CORENAME by
-    # more than the 30 s launcher tolerance), fall back to trusting a
-    # CURRENTPATH that (a) carries a known ROM extension and (b) differs from
-    # the game already committed. Trade-off, accepted deliberately: for
-    # no-Remote users this restores the pre-2.7 eager behaviour (highlighting
-    # a ROM in the OSD may update the display before loading). Remote users
-    # keep ACTIVEGAME alive, so their gate behaviour does not change.
-    cn_ns = _get_mtime_ns('/tmp/CORENAME')
-    activegame_dead = (not activegame) or (ag_ns < cn_ns - 30_000_000_000)
-    cp_ext = os.path.splitext(currentpath)[1].lower() if currentpath else ''
-    committed_path = _state.get('game_path', '')
-    rom_override = (activegame_dead and
-                    cp_ext in _KNOWN_ROM_EXTS and
-                    os.path.basename(currentpath) != os.path.basename(committed_path))
+    # Both navigation and launch write FILESELECT and CURRENTPATH microseconds
+    # apart, so the coupling delta alone cannot tell them apart; the file's
+    # CONTENT can. 'selected' is written only on an actual launch, so it vetoes
+    # the navigation verdict outright — and it needs no tracker, which matters
+    # for the many setups without Remote/Zaparoo running.
+    fileselect_load = (fileselect == 'selected')
 
-    if delta_ms <= _NAV_COUPLING_MS and not core_changed and not activegame_recent:
-        if rom_override:
-            print(f"🎯 ROM path change without ACTIVEGAME signal — treating as load: '{currentpath}'")
-        else:
-            print(f"🔀 OSD navigation detected (Δ={delta_ms:.2f} ms) — state unchanged")
-            return
+    if (delta_ms <= _NAV_COUPLING_MS and not core_changed
+            and not activegame_recent and not fileselect_load):
+        print(f"🔀 OSD navigation detected (Δ={delta_ms:.2f} ms) — state unchanged")
+        return
 
     _last_evaluated_corename = corename
 
@@ -1651,6 +1638,25 @@ def _update_state():
         # the only defence. 30 s of tolerance covers launchers that announce
         # the game seconds BEFORE the core lands (Remote/Zaparoo cross-core
         # transient) and slow core loads, same rationale as ARCADE_FRESHNESS.
+        #
+        # Main_MiSTer itself is the most reliable witness of a launch, and it
+        # needs no tracker at all: on 'selected' it has just written the file
+        # name to CURRENTPATH, while FULLPATH still holds the folder the
+        # browser was in. Composing the two yields the real file. This must run
+        # BEFORE the ACTIVEGAME branch because some trackers mirror FULLPATH
+        # (the FOLDER) into ACTIVEGAME: every game in one folder then looks
+        # identical, and the display freezes on the first one. Requiring a known
+        # ROM extension on CURRENTPATH keeps the NeoGeo romset case out of here
+        # — there CURRENTPATH is a bare title and ACTIVEGAME is authoritative.
+        elif fileselect == 'selected' and cp_ext in _KNOWN_ROM_EXTS:
+            game_name = _game_name_from_path(currentpath)
+            base = fullpath.rstrip('/') if fullpath else ''
+            if base and not base.endswith(currentpath):
+                game_path = base + '/' + currentpath      # browser: folder + file
+            else:
+                game_path = base or currentpath           # MGL: already the file
+            print(f"🎯 Launch via FILESELECT=selected: {game_name}")
+
         elif (activegame and not activegame.lower().endswith('.ini') and
               activegame_ts >= corename_ts - 30):
             game_name = _game_name_from_path(activegame)
